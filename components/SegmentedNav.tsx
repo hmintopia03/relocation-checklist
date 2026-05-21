@@ -1,11 +1,12 @@
 "use client";
 
-import { Archive, ListChecks, Map, Radar } from "lucide-react";
+import { Archive, ListChecks, Map } from "lucide-react";
 import type { ViewMode } from "@/lib/types";
 
 const items: Array<{ id: ViewMode; label: string; icon: React.ReactNode }> = [
-  { id: "timeline", label: "Timeline", icon: <Map /> },
-  { id: "focus", label: "Focus", icon: <Radar /> },
+  { id: "timeline", label: "Progress", icon: <Map /> },
+  { id: "categories", label: "Categories", icon: <ListChecks /> },
+  { id: "packing", label: "Packing", icon: <Archive /> },
   { id: "tasks", label: "All Tasks", icon: <ListChecks /> },
   { id: "archive", label: "Archive", icon: <Archive /> },
 ];

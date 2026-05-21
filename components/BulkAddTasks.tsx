@@ -71,9 +71,9 @@ export function BulkAddTasks({
     <motion.div className="fixed inset-0 z-40 grid place-items-end bg-black/20 p-3 backdrop-blur-sm sm:place-items-center" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
       <motion.form
         onSubmit={submit}
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: 8 }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
         transition={{ duration: 0.16, ease: "easeOut" }}
         className="max-h-[92vh] w-full max-w-3xl overflow-hidden rounded-[1.5rem] border border-black/10 bg-paper shadow-soft"
       >

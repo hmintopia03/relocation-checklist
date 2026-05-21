@@ -26,7 +26,7 @@ export function TaskCard({ task, phase, phases, dependencyTitle, active, onCompl
 
   return (
     <motion.article
-      initial={{ opacity: 0 }}
+      initial={false}
       animate={{ opacity: 1, backgroundColor: active ? "rgba(15,143,104,0.08)" : undefined }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.14, ease: "easeOut" }}

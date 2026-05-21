@@ -3,28 +3,34 @@
 import { ChangeEvent, useRef, useState } from "react";
 import { AlertTriangle, Download, RotateCcw, Upload } from "lucide-react";
 import { exportData, hydratePhases, importData } from "@/lib/persistence";
-import type { Phase } from "@/lib/types";
+import type { InventoryCategory, InventoryItem, PackingContainer, Phase } from "@/lib/types";
 
 const formatSavedAt = (value: string) => value.replace("T", " ").slice(0, 19);
 
 export function DataSafetyPanel({
   phases,
+  inventoryCategories,
+  inventoryItems,
+  packingContainers,
   error,
   lastSavedAt,
   onRestore,
   onReset,
 }: {
   phases: Phase[];
+  inventoryCategories: InventoryCategory[];
+  inventoryItems: InventoryItem[];
+  packingContainers: PackingContainer[];
   error?: string;
   lastSavedAt?: string;
-  onRestore: (phases: Phase[]) => void;
+  onRestore: (phases: Phase[], inventoryCategories: InventoryCategory[], inventoryItems: InventoryItem[], packingContainers: PackingContainer[]) => void;
   onReset: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [importError, setImportError] = useState<string>();
 
   const downloadBackup = () => {
-    const blob = new Blob([exportData(phases)], { type: "application/json" });
+    const blob = new Blob([exportData(phases, inventoryCategories, inventoryItems, packingContainers)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -49,7 +55,7 @@ export function DataSafetyPanel({
     if (!confirmed) return;
 
     setImportError(undefined);
-    onRestore(hydratePhases(imported.data));
+    onRestore(hydratePhases(imported.data), imported.data.inventoryCategories, imported.data.inventoryItems, imported.data.packingContainers);
   };
 
   return (
