@@ -28,9 +28,18 @@ export type BuyLocation = "none" | "korea" | "germany";
 
 export type InventoryPriority = "low" | "medium" | "high";
 
+export type InventoryTransportStatus = "bring" | "cannot_bring" | "buy_in_germany" | "leave_behind";
+
 export type InventoryCategory = {
   id: string;
   name: string;
+};
+
+export type InventoryTopic = {
+  id: string;
+  categoryId: string;
+  name: string;
+  order?: number;
 };
 
 export type PackingContainer = {
@@ -42,10 +51,13 @@ export type InventoryItem = {
   id: string;
   name: string;
   categoryId: string;
+  topicId?: string;
+  /** Legacy/import compatibility. New writes should prefer topicId. */
   topic?: string;
   quantity: string;
   status: InventoryStatus;
   buyLocation: BuyLocation;
+  transportStatus?: InventoryTransportStatus;
   priority: InventoryPriority;
   notes?: string;
   containerId?: string;

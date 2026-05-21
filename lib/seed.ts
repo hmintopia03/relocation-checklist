@@ -1,4 +1,4 @@
-import type { InventoryCategory, InventoryItem, PackingContainer, Phase } from "./types";
+import type { InventoryCategory, InventoryItem, InventoryTopic, PackingContainer, Phase } from "./types";
 
 export const seedPhases: Phase[] = [
   {
@@ -157,11 +157,13 @@ export const seedPackingContainers: PackingContainer[] = [
   { id: "future-korea-shipment", name: "Future Korea shipment" },
 ];
 
+export const seedInventoryTopics: InventoryTopic[] = [];
+
 const item = (
   id: string,
   name: string,
   categoryId: string,
-  options: Partial<Pick<InventoryItem, "topic" | "quantity" | "status" | "buyLocation" | "priority" | "notes" | "containerId" | "packed">> = {},
+  options: Partial<Pick<InventoryItem, "topicId" | "topic" | "quantity" | "status" | "buyLocation" | "transportStatus" | "priority" | "notes" | "containerId" | "packed">> = {},
 ): InventoryItem => ({
   id,
   name,
@@ -170,6 +172,7 @@ const item = (
   quantity: options.quantity ?? "1",
   status: options.status ?? "already_have",
   buyLocation: options.buyLocation ?? "none",
+  transportStatus: options.transportStatus ?? (options.buyLocation === "germany" ? "buy_in_germany" : "bring"),
   priority: options.priority ?? "medium",
   notes: options.notes,
   containerId: options.containerId,

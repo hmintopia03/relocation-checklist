@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 import { createSeedStorageData, flattenData, hydratePhases, loadData, saveData } from "./persistence";
-import type { InventoryCategory, InventoryItem, PackingContainer, Phase, RelocationTask, TaskStatus } from "./types";
+import type { InventoryCategory, InventoryItem, InventoryTopic, PackingContainer, Phase, RelocationTask, TaskStatus } from "./types";
 
 export type PhaseDraft = Omit<Phase, "id" | "tasks"> & {
   id?: string;
@@ -20,6 +20,7 @@ export type InventoryItemDraft = Omit<InventoryItem, "id"> & {
 type RelocationState = {
   phases: Phase[];
   inventoryCategories: InventoryCategory[];
+  inventoryTopics: InventoryTopic[];
   inventoryItems: InventoryItem[];
   packingContainers: PackingContainer[];
   selectedPhaseId: string;
@@ -41,15 +42,20 @@ type RelocationState = {
   deleteTasks: (taskIds: string[]) => void;
   setTaskStatus: (phaseId: string, taskId: string, status: TaskStatus) => void;
   completeTask: (phaseId: string, taskId: string) => void;
+  addInventoryCategory: (name: string) => void;
+  updateInventoryCategory: (categoryId: string, name: string) => void;
   addInventoryItem: (item: InventoryItemDraft) => void;
   updateInventoryItem: (itemId: string, patch: Partial<InventoryItem>) => void;
   deleteInventoryItem: (itemId: string) => void;
   deleteInventoryItems: (itemIds: string[]) => void;
+  addInventoryTopic: (categoryId: string, name: string) => void;
+  updateInventoryTopic: (topicId: string, name: string) => void;
+  deleteInventoryTopic: (topicId: string) => void;
   assignInventoryItem: (itemId: string, containerId?: string) => void;
   reorderUnassignedItems: (orderedItemIds: string[]) => void;
   toggleInventoryPacked: (itemId: string) => void;
   hydrateData: () => void;
-  replaceData: (phases: Phase[], inventoryCategories?: InventoryCategory[], inventoryItems?: InventoryItem[], packingContainers?: PackingContainer[]) => void;
+  replaceData: (phases: Phase[], inventoryCategories?: InventoryCategory[], inventoryItems?: InventoryItem[], packingContainers?: PackingContainer[], inventoryTopics?: InventoryTopic[]) => void;
   resetToSampleData: () => void;
   clearPersistenceError: () => void;
 };
@@ -91,21 +97,25 @@ const sanitizeInventoryItem = (item: InventoryItemDraft): InventoryItem => ({
   id: item.id ?? makeId("item"),
   name: item.name.trim() || "Untitled item",
   categoryId: item.categoryId,
+  topicId: item.topicId || undefined,
   topic: item.topic?.trim() || undefined,
   quantity: item.quantity.trim() || "1",
   status: item.status,
   buyLocation: item.buyLocation,
+  transportStatus: item.transportStatus ?? (item.buyLocation === "germany" ? "buy_in_germany" : "bring"),
   priority: item.priority,
   notes: item.notes?.trim(),
-  containerId: item.containerId || undefined,
-  packed: item.packed ?? false,
+  containerId: (item.transportStatus ?? (item.buyLocation === "germany" ? "buy_in_germany" : "bring")) === "bring" ? item.containerId || undefined : undefined,
+  packed: (item.transportStatus ?? (item.buyLocation === "germany" ? "buy_in_germany" : "bring")) === "bring" ? item.packed ?? false : false,
   packingOrder: item.packingOrder ?? 0,
 });
 
 const getNextPackingOrder = (items: InventoryItem[]) => Math.max(-1, ...items.filter((item) => !item.containerId).map((item) => item.packingOrder ?? 0)) + 1;
 
-const persistData = (phases: Phase[], inventoryCategories: InventoryCategory[], inventoryItems: InventoryItem[], packingContainers: PackingContainer[]) => {
-  const data = flattenData(phases, inventoryCategories, inventoryItems, packingContainers);
+const getNextTopicOrder = (topics: InventoryTopic[], categoryId: string) => Math.max(-1, ...topics.filter((topic) => topic.categoryId === categoryId).map((topic) => topic.order ?? 0)) + 1;
+
+const persistData = (phases: Phase[], inventoryCategories: InventoryCategory[], inventoryItems: InventoryItem[], packingContainers: PackingContainer[], inventoryTopics: InventoryTopic[]) => {
+  const data = flattenData(phases, inventoryCategories, inventoryItems, packingContainers, inventoryTopics);
   saveData(data);
   return data.updatedAt;
 };
@@ -113,6 +123,7 @@ const persistData = (phases: Phase[], inventoryCategories: InventoryCategory[], 
 export const useRelocationStore = create<RelocationState>()((set, get) => ({
   phases: createSeedStorageData().phases.map((phase) => ({ ...phase, tasks: [] })),
   inventoryCategories: createSeedStorageData().inventoryCategories,
+  inventoryTopics: createSeedStorageData().inventoryTopics,
   inventoryItems: createSeedStorageData().inventoryItems,
   packingContainers: createSeedStorageData().packingContainers,
   selectedPhaseId: createSeedStorageData().phases[0]?.id ?? "",
@@ -125,6 +136,7 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
     set({
       phases,
       inventoryCategories: loaded.data.inventoryCategories,
+      inventoryTopics: loaded.data.inventoryTopics,
       inventoryItems: loaded.data.inventoryItems,
       packingContainers: loaded.data.packingContainers,
       selectedPhaseId: phases[0]?.id ?? "",
@@ -148,7 +160,7 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
         },
       ];
       try {
-        return { phases, selectedPhaseId: id, lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers), persistenceError: undefined };
+        return { phases, selectedPhaseId: id, lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
       } catch (error) {
         return { phases, selectedPhaseId: id, persistenceError: error instanceof Error ? error.message : "Could not save phase." };
       }
@@ -157,7 +169,7 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
     set((state) => {
       const phases = state.phases.map((phase) => (phase.id === phaseId ? { ...phase, ...patch } : phase));
       try {
-        return { phases, lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers), persistenceError: undefined };
+        return { phases, lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
       } catch (error) {
         return { phases, persistenceError: error instanceof Error ? error.message : "Could not save phase." };
       }
@@ -176,7 +188,7 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
           })),
         }));
       try {
-        return { phases, selectedPhaseId: phases[0]?.id ?? "", lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers), persistenceError: undefined };
+        return { phases, selectedPhaseId: phases[0]?.id ?? "", lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
       } catch (error) {
         return { phases, selectedPhaseId: phases[0]?.id ?? "", persistenceError: error instanceof Error ? error.message : "Could not delete phase." };
       }
@@ -185,7 +197,7 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
     set((state) => {
       const phases = state.phases.map((phase) => (phase.id === phaseId ? { ...phase, tasks: [...phase.tasks, sanitizeTask({ ...task, order: getNextTaskOrder(phase.tasks, task.deadline) })] } : phase));
       try {
-        return { phases, lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers), persistenceError: undefined };
+        return { phases, lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
       } catch (error) {
         return { phases, persistenceError: error instanceof Error ? error.message : "Could not save task." };
       }
@@ -203,7 +215,7 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
         return { ...phase, tasks: [...phase.tasks, ...sanitizedTasks] };
       });
       try {
-        return { phases, lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers), persistenceError: undefined };
+        return { phases, lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
       } catch (error) {
         return { phases, persistenceError: error instanceof Error ? error.message : "Could not save tasks." };
       }
@@ -222,7 +234,7 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
         };
       });
       try {
-        return { phases, lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers), persistenceError: undefined };
+        return { phases, lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
       } catch (error) {
         return { phases, persistenceError: error instanceof Error ? error.message : "Could not save task." };
       }
@@ -240,7 +252,7 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
         };
       });
       try {
-        return { phases, lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers), persistenceError: undefined };
+        return { phases, lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
       } catch (error) {
         return { phases, persistenceError: error instanceof Error ? error.message : "Could not save task order." };
       }
@@ -255,7 +267,7 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
             : phase.tasks.map((task) => ({ ...task, dependsOn: task.dependsOn?.filter((id) => id !== taskId) })),
       }));
       try {
-        return { phases, lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers), persistenceError: undefined };
+        return { phases, lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
       } catch (error) {
         return { phases, persistenceError: error instanceof Error ? error.message : "Could not delete task." };
       }
@@ -274,7 +286,7 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
           })),
       }));
       try {
-        return { phases, lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers), persistenceError: undefined };
+        return { phases, lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
       } catch (error) {
         return { phases, persistenceError: error instanceof Error ? error.message : "Could not delete selected tasks." };
       }
@@ -290,7 +302,7 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
           : phase,
       );
       try {
-        return { phases, lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers), persistenceError: undefined };
+        return { phases, lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
       } catch (error) {
         return { phases, persistenceError: error instanceof Error ? error.message : "Could not save task status." };
       }
@@ -312,7 +324,7 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
           : phase,
       );
       try {
-        return { phases, lastCompletedTaskId: task.status === "completed" ? undefined : taskId, lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers), persistenceError: undefined };
+        return { phases, lastCompletedTaskId: task.status === "completed" ? undefined : taskId, lastSavedAt: persistData(phases, state.inventoryCategories, state.inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
       } catch (error) {
         return { phases, persistenceError: error instanceof Error ? error.message : "Could not save task completion." };
       }
@@ -324,11 +336,33 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
     if (unlocked) set({ lastUnlockedTaskId: unlocked.id });
     if (!wasPhaseComplete && afterPhase && getPhaseProgress(afterPhase) === 100) set({ lastCompletedPhaseId: phaseId });
   },
+  addInventoryCategory: (name) =>
+    set((state) => {
+      const cleanName = name.trim();
+      if (!cleanName) return state;
+      const inventoryCategories = [...state.inventoryCategories, { id: makeId("category"), name: cleanName }];
+      try {
+        return { inventoryCategories, lastSavedAt: persistData(state.phases, inventoryCategories, state.inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
+      } catch (error) {
+        return { inventoryCategories, persistenceError: error instanceof Error ? error.message : "Could not add category." };
+      }
+    }),
+  updateInventoryCategory: (categoryId, name) =>
+    set((state) => {
+      const cleanName = name.trim();
+      if (!cleanName) return state;
+      const inventoryCategories = state.inventoryCategories.map((category) => (category.id === categoryId ? { ...category, name: cleanName } : category));
+      try {
+        return { inventoryCategories, lastSavedAt: persistData(state.phases, inventoryCategories, state.inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
+      } catch (error) {
+        return { inventoryCategories, persistenceError: error instanceof Error ? error.message : "Could not rename category." };
+      }
+    }),
   addInventoryItem: (item) =>
     set((state) => {
       const inventoryItems = [...state.inventoryItems, sanitizeInventoryItem({ ...item, packingOrder: item.packingOrder ?? getNextPackingOrder(state.inventoryItems) })];
       try {
-        return { inventoryItems, lastSavedAt: persistData(state.phases, state.inventoryCategories, inventoryItems, state.packingContainers), persistenceError: undefined };
+        return { inventoryItems, lastSavedAt: persistData(state.phases, state.inventoryCategories, inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
       } catch (error) {
         return { inventoryItems, persistenceError: error instanceof Error ? error.message : "Could not save inventory item." };
       }
@@ -337,7 +371,7 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
     set((state) => {
       const inventoryItems = state.inventoryItems.map((item) => (item.id === itemId ? sanitizeInventoryItem({ ...item, ...patch, id: item.id }) : item));
       try {
-        return { inventoryItems, lastSavedAt: persistData(state.phases, state.inventoryCategories, inventoryItems, state.packingContainers), persistenceError: undefined };
+        return { inventoryItems, lastSavedAt: persistData(state.phases, state.inventoryCategories, inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
       } catch (error) {
         return { inventoryItems, persistenceError: error instanceof Error ? error.message : "Could not update inventory item." };
       }
@@ -346,7 +380,7 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
     set((state) => {
       const inventoryItems = state.inventoryItems.filter((item) => item.id !== itemId);
       try {
-        return { inventoryItems, lastSavedAt: persistData(state.phases, state.inventoryCategories, inventoryItems, state.packingContainers), persistenceError: undefined };
+        return { inventoryItems, lastSavedAt: persistData(state.phases, state.inventoryCategories, inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
       } catch (error) {
         return { inventoryItems, persistenceError: error instanceof Error ? error.message : "Could not delete inventory item." };
       }
@@ -357,16 +391,48 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
       if (!deletedIds.size) return state;
       const inventoryItems = state.inventoryItems.filter((item) => !deletedIds.has(item.id));
       try {
-        return { inventoryItems, lastSavedAt: persistData(state.phases, state.inventoryCategories, inventoryItems, state.packingContainers), persistenceError: undefined };
+        return { inventoryItems, lastSavedAt: persistData(state.phases, state.inventoryCategories, inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
       } catch (error) {
         return { inventoryItems, persistenceError: error instanceof Error ? error.message : "Could not delete selected inventory items." };
       }
     }),
+  addInventoryTopic: (categoryId, name) =>
+    set((state) => {
+      const cleanName = name.trim();
+      if (!cleanName) return state;
+      const inventoryTopics = [...state.inventoryTopics, { id: makeId("topic"), categoryId, name: cleanName, order: getNextTopicOrder(state.inventoryTopics, categoryId) }];
+      try {
+        return { inventoryTopics, lastSavedAt: persistData(state.phases, state.inventoryCategories, state.inventoryItems, state.packingContainers, inventoryTopics), persistenceError: undefined };
+      } catch (error) {
+        return { inventoryTopics, persistenceError: error instanceof Error ? error.message : "Could not save topic." };
+      }
+    }),
+  updateInventoryTopic: (topicId, name) =>
+    set((state) => {
+      const cleanName = name.trim();
+      if (!cleanName) return state;
+      const inventoryTopics = state.inventoryTopics.map((topic) => (topic.id === topicId ? { ...topic, name: cleanName } : topic));
+      try {
+        return { inventoryTopics, lastSavedAt: persistData(state.phases, state.inventoryCategories, state.inventoryItems, state.packingContainers, inventoryTopics), persistenceError: undefined };
+      } catch (error) {
+        return { inventoryTopics, persistenceError: error instanceof Error ? error.message : "Could not rename topic." };
+      }
+    }),
+  deleteInventoryTopic: (topicId) =>
+    set((state) => {
+      if (state.inventoryItems.some((item) => item.topicId === topicId)) return state;
+      const inventoryTopics = state.inventoryTopics.filter((topic) => topic.id !== topicId);
+      try {
+        return { inventoryTopics, lastSavedAt: persistData(state.phases, state.inventoryCategories, state.inventoryItems, state.packingContainers, inventoryTopics), persistenceError: undefined };
+      } catch (error) {
+        return { inventoryTopics, persistenceError: error instanceof Error ? error.message : "Could not delete topic." };
+      }
+    }),
   assignInventoryItem: (itemId, containerId) =>
     set((state) => {
-      const inventoryItems = state.inventoryItems.map((item) => (item.id === itemId ? { ...item, containerId: containerId || undefined, packed: Boolean(containerId), packingOrder: containerId ? item.packingOrder : getNextPackingOrder(state.inventoryItems.filter((candidate) => candidate.id !== itemId)) } : item));
+      const inventoryItems = state.inventoryItems.map((item) => (item.id === itemId && (item.transportStatus ?? "bring") === "bring" ? { ...item, containerId: containerId || undefined, packed: Boolean(containerId), packingOrder: containerId ? item.packingOrder : getNextPackingOrder(state.inventoryItems.filter((candidate) => candidate.id !== itemId)) } : item));
       try {
-        return { inventoryItems, lastSavedAt: persistData(state.phases, state.inventoryCategories, inventoryItems, state.packingContainers), persistenceError: undefined };
+        return { inventoryItems, lastSavedAt: persistData(state.phases, state.inventoryCategories, inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
       } catch (error) {
         return { inventoryItems, persistenceError: error instanceof Error ? error.message : "Could not assign inventory item." };
       }
@@ -376,7 +442,7 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
       const orderedSet = new Set(orderedItemIds);
       const inventoryItems = state.inventoryItems.map((item) => (orderedSet.has(item.id) ? { ...item, packingOrder: orderedItemIds.indexOf(item.id) } : item));
       try {
-        return { inventoryItems, lastSavedAt: persistData(state.phases, state.inventoryCategories, inventoryItems, state.packingContainers), persistenceError: undefined };
+        return { inventoryItems, lastSavedAt: persistData(state.phases, state.inventoryCategories, inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
       } catch (error) {
         return { inventoryItems, persistenceError: error instanceof Error ? error.message : "Could not save packing order." };
       }
@@ -385,25 +451,27 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
     set((state) => {
       const inventoryItems = state.inventoryItems.map((item) => (item.id === itemId ? { ...item, packed: !item.packed } : item));
       try {
-        return { inventoryItems, lastSavedAt: persistData(state.phases, state.inventoryCategories, inventoryItems, state.packingContainers), persistenceError: undefined };
+        return { inventoryItems, lastSavedAt: persistData(state.phases, state.inventoryCategories, inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
       } catch (error) {
         return { inventoryItems, persistenceError: error instanceof Error ? error.message : "Could not update packed status." };
       }
     }),
-  replaceData: (phases, inventoryCategories, inventoryItems, packingContainers) => {
+  replaceData: (phases, inventoryCategories, inventoryItems, packingContainers, inventoryTopics) => {
     const selectedPhaseId = phases[0]?.id ?? "";
     try {
       set((state) => {
         const nextCategories = inventoryCategories ?? state.inventoryCategories;
         const nextItems = inventoryItems ?? state.inventoryItems;
         const nextContainers = packingContainers ?? state.packingContainers;
+        const nextTopics = inventoryTopics ?? state.inventoryTopics;
         return {
           phases,
           inventoryCategories: nextCategories,
+          inventoryTopics: nextTopics,
           inventoryItems: nextItems,
           packingContainers: nextContainers,
           selectedPhaseId,
-          lastSavedAt: persistData(phases, nextCategories, nextItems, nextContainers),
+          lastSavedAt: persistData(phases, nextCategories, nextItems, nextContainers, nextTopics),
           persistenceError: undefined,
         };
       });
@@ -416,7 +484,7 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
     const phases = hydratePhases(data);
     try {
       saveData(data);
-      set({ phases, inventoryCategories: data.inventoryCategories, inventoryItems: data.inventoryItems, packingContainers: data.packingContainers, selectedPhaseId: phases[0]?.id ?? "", lastSavedAt: data.updatedAt, persistenceError: undefined });
+      set({ phases, inventoryCategories: data.inventoryCategories, inventoryTopics: data.inventoryTopics, inventoryItems: data.inventoryItems, packingContainers: data.packingContainers, selectedPhaseId: phases[0]?.id ?? "", lastSavedAt: data.updatedAt, persistenceError: undefined });
     } catch (error) {
       set({ persistenceError: error instanceof Error ? error.message : "Could not reset sample data." });
     }
