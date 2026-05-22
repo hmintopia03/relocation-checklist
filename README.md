@@ -1,77 +1,268 @@
 # Relocation Quest
 
-Relocation Quest is a minimal, polished relocation checklist app built around phases instead of generic todos. The product idea is that moving countries should feel like clearing stages of a journey: calm, visible, and emotionally stabilizing.
+Relocation Quest is a relocation planning system designed around the real process of moving from Seoul to Berlin.
 
-The starter quest models a Korea to Berlin relocation with four phases:
+Instead of treating relocation as a generic todo list, the project models it as a long multi-phase journey involving:
 
-- Before Departure
-- Arrival Survival
-- Airbnb Period
-- Long-Term Settlement
+- migration planning
+- physical inventory management
+- temporary travel packing
+- bulk logistics workflows
+- uncertainty reduction
 
-Each phase has a description, date range, task list, and completion percentage. Tasks support notes, deadlines, status, and dependency IDs so later checkpoints can unlock when earlier work is cleared.
+The app combines:
 
-## Stack
+- task management
+- inventory organization
+- travel container assignment
+- drag-and-drop interaction
+- persistent local storage
+- relocation-specific UX systems
 
-- Next.js App Router
-- TypeScript
-- Tailwind CSS
-- Zustand with localStorage persistence
-- Framer Motion
-- lucide-react icons
+## Core Concept
 
-## Features
+Relocation is treated as a staged system rather than a simple checklist.
 
-- Timeline/progression view inspired by transport maps and boarding passes
-- Current phase focus view
-- All open tasks view
-- Completed tasks archive
-- Add, edit, and delete phases
-- Add, edit, and delete tasks
-- Available, in progress, completed, and dependency-locked task states
-- Smooth task completion animation
-- Subtle phase completion celebration
-- Offline-first localStorage persistence
-- Versioned localStorage schema with JSON backup export/import
-- Import validation before replacing local data
-- Corrupted storage warning with backup restore path
-- Responsive, grayscale UI with a single green accent
+The product currently separates responsibilities into three connected areas:
+
+| System | Purpose |
+|--------|---------|
+| Progress | Time-based relocation phases and checkpoints |
+| Categories | Stable inventory organization and buying decisions |
+| Packing | Temporary travel container assignment |
+
+The same inventory data is reused across systems.
+
+## Main Systems
+
+### Progress
+
+Phase-based relocation planning.
+
+**Features**
+
+- Multiple relocation phases
+- Editable phase ranges
+- Chronological phase ordering
+- Due-date grouped checkpoints
+- Task status filtering
+- Drag-and-drop checkpoint sorting
+- Bulk task creation
+- Import historical relocation records
+- Multi-select mode
+- Bulk delete
+- Inline editing
+- Phase progress calculation
+
+**UX Details**
+
+- Selection mode reduces accidental completion
+- Reordering preserves manual ordering
+- Bulk-added tasks preserve insertion order
+- Reduced motion for calmer interaction
+- Improved drag stability
+
+### Categories
+
+Long-term inventory organization.
+
+This system answers:
+
+> "What do I own, what do I need, and where should I buy it?"
+
+**Features**
+
+- Category sections
+- Topic grouping inside categories
+- Shared inventory persistence
+- Inline item editing
+- Bulk add items
+- Topic-based bulk add
+- Multi-select mode
+- Bulk deletion
+
+**Item States**
+
+- Already have
+- Need to buy
+- Buy in Korea
+- Buy in Germany
+- Cannot bring
+
+**Current UX Direction**
+
+- Compact checklist layout
+- Lower visual noise
+- Faster editing workflows
+- Reduced modal dependency
+- Cleaner topic management
+
+### Packing
+
+Travel container assignment system.
+
+**Philosophy**
+
+Categories represent permanent organization.
+
+Packing represents temporary travel logistics.
+
+The same inventory items are reused across both systems.
+
+**Features**
+
+- Shared inventory data source
+- Multiple travel containers:
+  - 26-inch suitcase
+  - 20-inch suitcase
+  - Backpack
+  - Hip bag
+  - Korea shipment
+- Unassigned item pool
+- Category-grouped packing sections
+- Container progress visualization
+- Persistent manual ordering
+- Search inside unassigned items
+- Drag-and-drop assignment workflow
+- Category-level packing workflow
+
+**Current Interaction Model**
+
+Users can:
+
+- move individual items
+- drag items into containers
+- move entire categories
+- reorder unassigned items
+- edit inventory globally
+- remove items from all systems
+
+**Recent UX Improvements**
+
+- Reduced animation intensity
+- Drag handles for stable interaction
+- Lower interaction noise
+- Cleaner grouped layout
+- Category-based packing workflow
+- Improved visual hierarchy
+- Safer destructive actions
+
+## Shared Inventory Architecture
+
+Categories and Packing operate on the same underlying inventory model.
+
+This enables:
+
+- single source of truth
+- synchronized editing
+- shared persistence
+- shared metadata
+- shared deletion lifecycle
+
+Example:
+
+> Deleting an item in Packing also removes it from Categories.
+
+## Persistence
+
+The app currently uses:
+
+- Zustand persist middleware
+- localStorage persistence
+- versioned client schema
+- JSON backup/restore
+
+Data survives:
+
+- refreshes
+- interaction refactors
+- UI redesigns
+- reorder operations
+
+The app also includes:
+
+- corrupted storage detection
+- import validation
+- backup export/import
+
+## Technical Stack
+
+| Area | Tech |
+|------|------|
+| Framework | Next.js App Router |
+| Language | TypeScript |
+| Styling | Tailwind CSS |
+| State | Zustand |
+| Animation | Framer Motion |
+| Icons | lucide-react |
+| Persistence | localStorage |
+
+## Interaction Design Priorities
+
+The project focuses heavily on:
+
+- relocation-specific workflows
+- low-friction editing
+- reduced cognitive load
+- smooth drag interactions
+- persistent state safety
+- bulk operations
+- calmer interfaces
+
+The goal is not maximum feature count.
+
+The goal is:
+
+- clarity
+- stability
+- workflow speed
+- reduced uncertainty
+- real-world usefulness
+
+## Design Direction
+
+The UI is intentionally moving toward:
+
+- lighter interfaces
+- denser information layout
+- fewer oversized cards
+- calmer interaction patterns
+- faster bulk workflows
+
+Examples include:
+
+- grouped packing categories
+- compact checklist rows
+- inline editing
+- drag handles
+- reduced motion
+- contained action controls
+- shared inventory persistence
 
 ## Project Structure
 
-```txt
+```
 app/
   globals.css
   layout.tsx
   page.tsx
+
 components/
   PhaseModal.tsx
+  TaskModal.tsx
   ProgressBar.tsx
   SegmentedNav.tsx
-  TaskCard.tsx
-  TaskModal.tsx
+  PackingItemCard.tsx
+  PackingContainerCard.tsx
+  PackingUnassignedQueue.tsx
+
 lib/
-  date.ts
+  store.ts
   persistence.ts
   seed.ts
-  store.ts
+  date.ts
   types.ts
 ```
-
-## Persistence
-
-Relocation Quest stores data locally under a versioned schema:
-
-```json
-{
-  "version": 1,
-  "phases": [],
-  "tasks": [],
-  "updatedAt": "2026-05-20T00:00:00.000Z"
-}
-```
-
-Sample data is written only when no saved data exists. Existing saved data is loaded first, and corrupted storage is surfaced in the UI instead of being silently deleted. Use **Download backup** to export a JSON file and **Restore from backup** to validate and replace local data.
 
 ## Development
 
@@ -80,14 +271,61 @@ npm install
 npm run dev
 ```
 
-Open `http://127.0.0.1:3000`.
+Open:
 
-## Roadmap
+```
+http://127.0.0.1:3000
+```
 
-- Data import/export
-- Multiple relocation quest templates
-- Calendar integration
-- Reminder and notification layer
-- Authentication and synced cloud storage
-- AI-assisted task suggestions
-- Phase-level attachments and document vault
+## Current Status
+
+Active in-development prototype.
+
+Current functional systems:
+
+- Progress
+- Categories
+- Packing
+- Shared inventory persistence
+- Drag-and-drop workflows
+- Bulk operations
+- Record importing
+- Phase management
+- Packing container assignment
+
+The project is currently focused on:
+
+> UX refinement + interaction polish + relocation workflow optimization
+
+## Planned Directions
+
+### Progress
+
+- Undo restore for accidental deletion
+- Better phase analytics
+- Calendar integrations
+- Dependency visualization
+
+### Categories
+
+- Topic rename system
+- Topic management UI
+- Cleaner metadata editing
+- Faster bulk workflows
+
+### Packing
+
+- Cross-category drag refinement
+- Better container interactions
+- Packing optimization views
+- Weight / volume estimation
+- Multi-currency relocation cost tracking
+
+### Long-Term
+
+- Cloud sync
+- Authentication
+- Multi-device persistence
+- AI-assisted relocation suggestions
+- Relocation templates
+- Document vault system
