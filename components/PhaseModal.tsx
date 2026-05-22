@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { X } from "lucide-react";
 import type { Phase } from "@/lib/types";
@@ -29,6 +29,15 @@ export function PhaseModal({
     startDate: phase?.startDate ?? today,
     endDate: phase?.endDate ?? today,
   });
+
+  useEffect(() => {
+    setForm({
+      title: phase?.title ?? "",
+      description: phase?.description ?? "",
+      startDate: phase?.startDate ?? today,
+      endDate: phase?.endDate ?? today,
+    });
+  }, [phase]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();

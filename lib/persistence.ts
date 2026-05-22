@@ -78,6 +78,8 @@ const validateTask = (task: unknown, phaseIds: Set<string>): task is StoredTask 
     isString(task.status) &&
     validStatuses.includes(task.status as TaskStatus) &&
     (task.note === undefined || isString(task.note)) &&
+    (task.completedAt === undefined || isString(task.completedAt)) &&
+    (task.cost === undefined || typeof task.cost === "number") &&
     (task.createdAt === undefined || isString(task.createdAt)) &&
     (task.order === undefined || typeof task.order === "number") &&
     (dependsOn === undefined || (Array.isArray(dependsOn) && dependsOn.every(isString)))

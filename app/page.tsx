@@ -7,13 +7,17 @@ import {
   CalendarDays,
   Check,
   CheckCircle2,
+  ChevronDown,
   Circle,
   Clock3,
+  FileUp,
   GripVertical,
   Backpack,
   Luggage,
   ListChecks,
   Map,
+  MoreVertical,
+  ArrowUp,
   Package,
   Pencil,
   Plane,
@@ -23,7 +27,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { BulkAddTasks } from "@/components/BulkAddTasks";
+import { BulkAddTasks, type BulkAddMode } from "@/components/BulkAddTasks";
 import { DataSafetyPanel } from "@/components/DataSafetyPanel";
 import { PhaseModal } from "@/components/PhaseModal";
 import { ProgressBar } from "@/components/ProgressBar";
@@ -31,10 +35,23 @@ import { TaskModal } from "@/components/TaskModal";
 import { TaskTextModal } from "@/components/TaskTextModal";
 import { formatDateRange, formatShortDate, isOverdue } from "@/lib/date";
 import { getAllTasks, getPhaseProgress, isTaskUnlocked, useRelocationStore } from "@/lib/store";
+import { splitTaskTitle } from "@/lib/taskTitle";
 import type { BuyLocation, InventoryCategory, InventoryItem, InventoryPriority, InventoryStatus, InventoryTopic, InventoryTransportStatus, PackingContainer, Phase, RelocationTask, TaskStatus, ViewMode } from "@/lib/types";
 
 type TaskEditor = { phaseId: string; task?: RelocationTask; mode?: "full" | "text" } | null;
 type TaskWithPhase = RelocationTask & { phaseId: string; phaseTitle: string };
+type UndoSnapshot = {
+  phases: Phase[];
+  inventoryCategories: InventoryCategory[];
+  inventoryTopics: InventoryTopic[];
+  inventoryItems: InventoryItem[];
+  packingContainers: PackingContainer[];
+};
+type UndoNotice = {
+  id: number;
+  message: string;
+  snapshot: UndoSnapshot;
+};
 
 const navItems: Array<{ id: ViewMode; label: string; icon: React.ReactNode }> = [
   { id: "timeline", label: "Progress", icon: <Map /> },
@@ -43,6 +60,17 @@ const navItems: Array<{ id: ViewMode; label: string; icon: React.ReactNode }> = 
   { id: "tasks", label: "All Tasks", icon: <ListChecks /> },
   { id: "archive", label: "Archive", icon: <Archive /> },
 ];
+
+const phaseDateKey = (value: string) => {
+  const time = new Date(`${value}T00:00:00`).getTime();
+  return Number.isFinite(time) ? time : Number.MAX_SAFE_INTEGER;
+};
+
+const sortPhasesChronologically = (items: Phase[]) =>
+  items
+    .map((phase, index) => ({ phase, index }))
+    .sort((a, b) => phaseDateKey(a.phase.startDate) - phaseDateKey(b.phase.startDate) || phaseDateKey(a.phase.endDate) - phaseDateKey(b.phase.endDate) || a.index - b.index)
+    .map(({ phase }) => phase);
 
 export default function Home() {
   const {
@@ -71,6 +99,7 @@ export default function Home() {
     completeTask,
     addInventoryCategory,
     updateInventoryCategory,
+    deleteInventoryCategory,
     addInventoryItem,
     updateInventoryItem,
     deleteInventoryItem,
@@ -87,37 +116,106 @@ export default function Home() {
   const [phaseEditor, setPhaseEditor] = useState<Phase | "new" | null>(null);
   const [taskEditor, setTaskEditor] = useState<TaskEditor>(null);
   const [isBulkAddOpen, setBulkAddOpen] = useState(false);
+  const [bulkAddMode, setBulkAddMode] = useState<BulkAddMode>("tasks");
   const [isSettingsOpen, setSettingsOpen] = useState(false);
+  const [undoNotice, setUndoNotice] = useState<UndoNotice | null>(null);
+  const undoTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     hydrateData();
   }, [hydrateData]);
 
-  const selectedPhase = phases.find((phase) => phase.id === selectedPhaseId) ?? phases[0];
-  const allTasks = useMemo(() => getAllTasks(phases), [phases]);
+  useEffect(() => () => {
+    if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
+  }, []);
+
+  const sortedPhases = useMemo(() => sortPhasesChronologically(phases), [phases]);
+  const selectedPhase = sortedPhases.find((phase) => phase.id === selectedPhaseId) ?? sortedPhases[0];
+  const allTasks = useMemo(() => getAllTasks(sortedPhases), [sortedPhases]);
   const completedTasks = allTasks.filter((task) => task.status === "completed");
   const activeTasks = allTasks.filter((task) => task.status !== "completed");
   const overallProgress = allTasks.length ? Math.round((completedTasks.length / allTasks.length) * 100) : 0;
   const dependencyTitle = useMemo(() => new globalThis.Map(allTasks.map((task) => [task.id, task.title])), [allTasks]);
   const recentCompleted = completedTasks.slice(-3).reverse();
-  const taskPhase = taskEditor ? phases.find((phase) => phase.id === taskEditor.phaseId) : undefined;
-  const hasQuestData = phases.length > 0;
+  const taskPhase = taskEditor ? sortedPhases.find((phase) => phase.id === taskEditor.phaseId) : undefined;
+  const hasQuestData = sortedPhases.length > 0;
   const phaseTasks: TaskWithPhase[] = selectedPhase?.tasks.map((task) => ({ ...task, phaseId: selectedPhase.id, phaseTitle: selectedPhase.title })) ?? [];
   const visiblePhaseTasks = phaseTasks.filter((task) => taskFilter === "all" || task.status === taskFilter);
+  const visibleAllTasks = allTasks.filter((task) => taskFilter === "all" || task.status === taskFilter);
 
   const openTaskEditor = (phaseId: string, task?: RelocationTask, mode: "full" | "text" = "full") => setTaskEditor({ phaseId, task, mode });
+  const openBulkAdd = (mode: BulkAddMode = "tasks") => {
+    setBulkAddMode(mode);
+    setBulkAddOpen(true);
+  };
+  const createUndoSnapshot = (): UndoSnapshot => ({
+    phases,
+    inventoryCategories,
+    inventoryTopics,
+    inventoryItems,
+    packingContainers,
+  });
+  const showUndoNotice = (message: string, snapshot: UndoSnapshot) => {
+    if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
+    const id = Date.now();
+    setUndoNotice({ id, message, snapshot });
+    undoTimerRef.current = window.setTimeout(() => {
+      setUndoNotice((notice) => (notice?.id === id ? null : notice));
+      undoTimerRef.current = null;
+    }, 5200);
+  };
+  const dismissUndoNotice = () => {
+    if (undoTimerRef.current) {
+      window.clearTimeout(undoTimerRef.current);
+      undoTimerRef.current = null;
+    }
+    setUndoNotice(null);
+  };
+  const restoreUndoNotice = () => {
+    if (!undoNotice) return;
+    if (undoTimerRef.current) {
+      window.clearTimeout(undoTimerRef.current);
+      undoTimerRef.current = null;
+    }
+    replaceData(undoNotice.snapshot.phases, undoNotice.snapshot.inventoryCategories, undoNotice.snapshot.inventoryItems, undoNotice.snapshot.packingContainers, undoNotice.snapshot.inventoryTopics);
+    setUndoNotice(null);
+  };
   const confirmDeleteTask = (phaseId: string, taskId: string) => {
-    if (window.confirm("Delete this task? This cannot be undone unless you restore a backup.")) deleteTask(phaseId, taskId);
+    if (!window.confirm("Delete this task? This cannot be undone unless you restore a backup.")) return;
+    const snapshot = createUndoSnapshot();
+    deleteTask(phaseId, taskId);
+    showUndoNotice("Deleted task", snapshot);
+  };
+  const deleteTasksWithUndo = (taskIds: string[]) => {
+    if (!taskIds.length) return;
+    const snapshot = createUndoSnapshot();
+    deleteTasks(taskIds);
+    showUndoNotice(taskIds.length === 1 ? "Deleted task" : `Deleted ${taskIds.length} tasks`, snapshot);
+  };
+  const deleteInventoryItemWithUndo = (itemId: string) => {
+    const snapshot = createUndoSnapshot();
+    deleteInventoryItem(itemId);
+    showUndoNotice("Deleted item", snapshot);
+  };
+  const deleteInventoryItemsWithUndo = (itemIds: string[]) => {
+    if (!itemIds.length) return;
+    const snapshot = createUndoSnapshot();
+    deleteInventoryItems(itemIds);
+    showUndoNotice(itemIds.length === 1 ? "Deleted item" : `Deleted ${itemIds.length} items`, snapshot);
   };
   const confirmDeletePhase = (phaseId: string) => {
     if (window.confirm("Delete this phase and its tasks? This cannot be undone unless you restore a backup.")) deletePhase(phaseId);
+  };
+  const getSplitTitles = (title: string) => {
+    const titles = splitTaskTitle(title);
+    return titles.length ? titles : [title];
   };
 
   return (
     <main className="min-h-screen bg-[#f7f6f2] text-ink">
       <div className="mx-auto grid min-h-screen w-full max-w-[1480px] gap-4 px-3 py-3 md:px-4 lg:grid-cols-[238px_minmax(0,1fr)_260px] lg:py-5">
         <Sidebar
-          phases={phases}
+          phases={sortedPhases}
           selectedPhaseId={selectedPhaseId}
           viewMode={viewMode}
           onViewChange={setViewMode}
@@ -131,7 +229,7 @@ export default function Home() {
 
         <section className="order-1 min-w-0 lg:order-2 lg:py-1">
           {!hasQuestData ? (
-          <EmptyRecovery error={persistenceError} phases={phases} inventoryCategories={inventoryCategories} inventoryTopics={inventoryTopics} inventoryItems={inventoryItems} packingContainers={packingContainers} lastSavedAt={lastSavedAt} onRestore={replaceData} onReset={resetToSampleData} />
+          <EmptyRecovery error={persistenceError} phases={sortedPhases} inventoryCategories={inventoryCategories} inventoryTopics={inventoryTopics} inventoryItems={inventoryItems} packingContainers={packingContainers} lastSavedAt={lastSavedAt} onRestore={replaceData} onReset={resetToSampleData} />
           ) : (
             <AnimatePresence mode="sync">
               {viewMode === "timeline" && selectedPhase && (
@@ -152,18 +250,18 @@ export default function Home() {
                   <TaskWorkspace
                     title="Tasks"
                     tasks={visiblePhaseTasks}
-                    phases={phases}
+                    phases={sortedPhases}
                     dependencyTitle={dependencyTitle}
                     filter={taskFilter}
                     onFilterChange={setTaskFilter}
                     lastCompletedTaskId={lastCompletedTaskId}
                     lastUnlockedTaskId={lastUnlockedTaskId}
                     onAddTask={() => openTaskEditor(selectedPhase.id)}
-                    onBulkAdd={() => setBulkAddOpen(true)}
+                    onBulkAdd={() => openBulkAdd()}
                     onEditTask={openTaskEditor}
                     onEditDate={(phaseId, taskId, deadline) => updateTask(phaseId, taskId, { deadline })}
                     onDeleteTask={confirmDeleteTask}
-                    onDeleteTasks={deleteTasks}
+                    onDeleteTasks={deleteTasksWithUndo}
                     onComplete={completeTask}
                     onStatusChange={setTaskStatus}
                     onReorderTasks={reorderTasks}
@@ -173,33 +271,34 @@ export default function Home() {
 
               {viewMode === "categories" && (
                 <motion.div key="categories" initial={false} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.12, ease: "easeOut" }}>
-                  <CategoriesView categories={inventoryCategories} topics={inventoryTopics} items={inventoryItems} onAddCategory={addInventoryCategory} onUpdateCategory={updateInventoryCategory} onAddItem={addInventoryItem} onUpdateItem={updateInventoryItem} onDeleteItem={deleteInventoryItem} onDeleteItems={deleteInventoryItems} />
+                  <CategoriesView categories={inventoryCategories} topics={inventoryTopics} items={inventoryItems} onAddCategory={addInventoryCategory} onUpdateCategory={updateInventoryCategory} onDeleteCategory={deleteInventoryCategory} onAddItem={addInventoryItem} onUpdateItem={updateInventoryItem} onDeleteItem={deleteInventoryItemWithUndo} onDeleteItems={deleteInventoryItemsWithUndo} />
                 </motion.div>
               )}
 
               {viewMode === "packing" && (
                 <motion.div key="packing" initial={false} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.12, ease: "easeOut" }}>
-                  <PackingView categories={inventoryCategories} topics={inventoryTopics} items={inventoryItems} containers={packingContainers} onAssign={assignInventoryItem} onDeleteItem={deleteInventoryItem} onReorderUnassigned={reorderUnassignedItems} />
+                  <PackingView categories={inventoryCategories} topics={inventoryTopics} items={inventoryItems} containers={packingContainers} onAssign={assignInventoryItem} onDeleteItem={deleteInventoryItemWithUndo} onReorderUnassigned={reorderUnassignedItems} />
                 </motion.div>
               )}
 
               {viewMode === "tasks" && (
                 <motion.div key="tasks" initial={false} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.12, ease: "easeOut" }}>
                   <TaskWorkspace
-                    title="All open checkpoints"
-                    tasks={activeTasks}
-                    phases={phases}
+                    title="All checkpoints"
+                    tasks={visibleAllTasks}
+                    phases={sortedPhases}
                     dependencyTitle={dependencyTitle}
-                    filter="all"
-                    onFilterChange={() => undefined}
+                    filter={taskFilter}
+                    onFilterChange={setTaskFilter}
                     lastCompletedTaskId={lastCompletedTaskId}
                     lastUnlockedTaskId={lastUnlockedTaskId}
                     onAddTask={() => openTaskEditor(selectedPhase.id)}
-                    onBulkAdd={() => setBulkAddOpen(true)}
+                    onBulkAdd={() => openBulkAdd()}
+                    onImportRecords={() => openBulkAdd("records")}
                     onEditTask={openTaskEditor}
                     onEditDate={(phaseId, taskId, deadline) => updateTask(phaseId, taskId, { deadline })}
                     onDeleteTask={confirmDeleteTask}
-                    onDeleteTasks={deleteTasks}
+                    onDeleteTasks={deleteTasksWithUndo}
                     onComplete={completeTask}
                     onStatusChange={setTaskStatus}
                   />
@@ -211,18 +310,18 @@ export default function Home() {
                   <TaskWorkspace
                     title="Completed archive"
                     tasks={completedTasks}
-                    phases={phases}
+                    phases={sortedPhases}
                     dependencyTitle={dependencyTitle}
                     filter="completed"
                     onFilterChange={() => undefined}
                     lastCompletedTaskId={lastCompletedTaskId}
                     lastUnlockedTaskId={lastUnlockedTaskId}
                     onAddTask={() => openTaskEditor(selectedPhase.id)}
-                    onBulkAdd={() => setBulkAddOpen(true)}
+                    onBulkAdd={() => openBulkAdd()}
                     onEditTask={openTaskEditor}
                     onEditDate={(phaseId, taskId, deadline) => updateTask(phaseId, taskId, { deadline })}
                     onDeleteTask={confirmDeleteTask}
-                    onDeleteTasks={deleteTasks}
+                    onDeleteTasks={deleteTasksWithUndo}
                     onComplete={completeTask}
                     onStatusChange={setTaskStatus}
                     empty="Completed checkpoints will collect here."
@@ -234,12 +333,13 @@ export default function Home() {
           )}
         </section>
 
-        <RightRail overallProgress={overallProgress} completedTasks={completedTasks.length} totalTasks={allTasks.length} nextTasks={activeTasks.filter((task) => isTaskUnlocked(task, phases)).slice(0, 3)} recentCompleted={recentCompleted} onOpenSettings={() => setSettingsOpen(true)} />
+        <RightRail overallProgress={overallProgress} completedTasks={completedTasks.length} totalTasks={allTasks.length} nextTasks={activeTasks.filter((task) => isTaskUnlocked(task, sortedPhases)).slice(0, 3)} recentCompleted={recentCompleted} onOpenSettings={() => setSettingsOpen(true)} />
       </div>
 
       <AnimatePresence>
         {phaseEditor && (
           <PhaseModal
+            key={phaseEditor === "new" ? "new-phase" : phaseEditor.id}
             phase={phaseEditor === "new" ? undefined : phaseEditor}
             onClose={() => setPhaseEditor(null)}
             onSubmit={(phase) => {
@@ -255,36 +355,75 @@ export default function Home() {
             task={taskEditor.task}
             onClose={() => setTaskEditor(null)}
             onSubmit={(task) => {
-              updateTask(taskEditor.phaseId, taskEditor.task!.id, task);
+              const [firstTitle, ...extraTitles] = getSplitTitles(task.title);
+              updateTask(taskEditor.phaseId, taskEditor.task!.id, { ...task, title: firstTitle });
+              if (extraTitles.length) {
+                addTasks(
+                  taskEditor.phaseId,
+                  extraTitles.map((title) => ({
+                    title,
+                    note: task.note,
+                    deadline: taskEditor.task!.deadline,
+                    status: taskEditor.task!.status,
+                    dependsOn: taskEditor.task!.dependsOn,
+                  })),
+                );
+              }
               setTaskEditor(null);
             }}
           />
         ) : taskEditor && taskPhase ? (
           <TaskModal
             phase={taskPhase}
-            phases={phases}
+            phases={sortedPhases}
             task={taskEditor.task}
             onClose={() => setTaskEditor(null)}
             onSubmit={(task) => {
-              if (taskEditor.task) updateTask(taskEditor.phaseId, taskEditor.task.id, task);
-              else addTask(taskEditor.phaseId, task);
+              const [firstTitle, ...extraTitles] = getSplitTitles(task.title);
+              const firstTask = { ...task, title: firstTitle };
+              if (taskEditor.task) {
+                updateTask(taskEditor.phaseId, taskEditor.task.id, firstTask);
+                if (extraTitles.length) addTasks(taskEditor.phaseId, extraTitles.map((title) => ({ ...task, id: undefined, title })));
+              } else {
+                const tasks = [firstTask, ...extraTitles.map((title) => ({ ...task, id: undefined, title }))];
+                if (tasks.length === 1) addTask(taskEditor.phaseId, firstTask);
+                else addTasks(taskEditor.phaseId, tasks);
+              }
               setTaskEditor(null);
             }}
           />
         ) : null}
         {isBulkAddOpen && (
           <BulkAddTasks
-            phases={phases}
-            defaultPhaseId={selectedPhase?.id ?? phases[0]?.id ?? ""}
+            phases={sortedPhases}
+            defaultPhaseId={selectedPhase?.id ?? sortedPhases[0]?.id ?? ""}
+            initialMode={bulkAddMode}
             onClose={() => setBulkAddOpen(false)}
             onCreate={(phaseId, tasks) => addTasks(phaseId, tasks)}
           />
         )}
         {isSettingsOpen && (
-          <UtilityDrawer phases={phases} inventoryCategories={inventoryCategories} inventoryTopics={inventoryTopics} inventoryItems={inventoryItems} packingContainers={packingContainers} error={persistenceError} lastSavedAt={lastSavedAt} onClose={() => setSettingsOpen(false)} onRestore={replaceData} onReset={resetToSampleData} />
+          <UtilityDrawer phases={sortedPhases} inventoryCategories={inventoryCategories} inventoryTopics={inventoryTopics} inventoryItems={inventoryItems} packingContainers={packingContainers} error={persistenceError} lastSavedAt={lastSavedAt} onClose={() => setSettingsOpen(false)} onRestore={replaceData} onReset={resetToSampleData} />
         )}
       </AnimatePresence>
+      {undoNotice && <UndoToast message={undoNotice.message} onUndo={restoreUndoNotice} onDismiss={dismissUndoNotice} />}
     </main>
+  );
+}
+
+function UndoToast({ message, onUndo, onDismiss }: { message: string; onUndo: () => void; onDismiss: () => void }) {
+  return (
+    <div className="fixed bottom-4 left-1/2 z-50 flex w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 items-center justify-between gap-3 rounded-2xl border border-black/10 bg-ink px-4 py-3 text-sm font-semibold text-white shadow-[0_18px_44px_rgba(23,23,23,0.18)] sm:left-auto sm:right-5 sm:translate-x-0">
+      <span className="min-w-0 truncate">{message}</span>
+      <span className="flex shrink-0 items-center gap-1.5">
+        <button type="button" onClick={onUndo} className="rounded-full bg-white/12 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/20">
+          Undo
+        </button>
+        <button type="button" onClick={onDismiss} className="grid h-7 w-7 place-items-center rounded-full text-white/60 transition hover:bg-white/10 hover:text-white" aria-label="Dismiss undo message">
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </span>
+    </div>
   );
 }
 
@@ -416,6 +555,7 @@ function TaskWorkspace(props: {
   lastUnlockedTaskId?: string;
   onAddTask: () => void;
   onBulkAdd: () => void;
+  onImportRecords?: () => void;
   onEditTask: (phaseId: string, task: RelocationTask, mode?: "full" | "text") => void;
   onEditDate: (phaseId: string, taskId: string, deadline: string) => void;
   onDeleteTask: (phaseId: string, taskId: string) => void;
@@ -482,6 +622,12 @@ function TaskWorkspace(props: {
               <ListChecks className="h-4 w-4" />
               Bulk add
             </button>
+            {props.onImportRecords && (
+              <button disabled={selectionMode} onClick={props.onImportRecords} className="inline-flex h-10 items-center justify-center gap-2 rounded-full border border-black/10 bg-white/55 px-4 text-sm font-semibold text-black/50 transition hover:border-accent/30 hover:text-accent disabled:cursor-not-allowed disabled:opacity-35">
+                <FileUp className="h-4 w-4" />
+                Import records
+              </button>
+            )}
             <button disabled={selectionMode} onClick={props.onAddTask} className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-accent px-4 text-sm font-semibold text-white shadow-[0_8px_22px_rgba(15,143,104,0.12)] transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:bg-black/20 disabled:shadow-none">
               <Plus className="h-4 w-4" />
               Add task
@@ -617,6 +763,7 @@ function CategoriesView({
   items,
   onAddCategory,
   onUpdateCategory,
+  onDeleteCategory,
   onAddItem,
   onUpdateItem,
   onDeleteItem,
@@ -627,6 +774,7 @@ function CategoriesView({
   items: InventoryItem[];
   onAddCategory: (name: string) => void;
   onUpdateCategory: (categoryId: string, name: string) => void;
+  onDeleteCategory: (categoryId: string) => void;
   onAddItem: (item: Omit<InventoryItem, "id"> & { id?: string }) => void;
   onUpdateItem: (itemId: string, patch: Partial<InventoryItem>) => void;
   onDeleteItem: (itemId: string) => void;
@@ -637,6 +785,7 @@ function CategoriesView({
   const [bulkEditor, setBulkEditor] = useState<{ categoryId?: string; topicId?: string; fixedCategory?: boolean } | null>(null);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
+  const [collapsedCategoryIds, setCollapsedCategoryIds] = useState<string[]>([]);
   const visibleItems = useMemo(() => items.filter((item) => {
     if (filter === "all") return true;
     if (filter === "korea") return item.buyLocation === "korea";
@@ -670,9 +819,25 @@ function CategoriesView({
     onDeleteItems(selectedItemIds);
     exitSelectionMode();
   };
+  const toggleCategoryCollapsed = (categoryId: string) => {
+    setCollapsedCategoryIds((ids) => (ids.includes(categoryId) ? ids.filter((id) => id !== categoryId) : [...ids, categoryId]));
+  };
+  const deleteCategory = (category: InventoryCategory, itemCount: number) => {
+    if (itemCount > 0 && !window.confirm(`Delete "${category.name}" and its ${itemCount} ${itemCount === 1 ? "item" : "items"}? This cannot be undone.`)) return;
+    onDeleteCategory(category.id);
+    setCollapsedCategoryIds((ids) => ids.filter((id) => id !== category.id));
+    setSelectedItemIds((ids) => ids.filter((id) => !items.some((item) => item.categoryId === category.id && item.id === id)));
+  };
   const addCategory = () => {
     const name = window.prompt("New category name");
-    if (name?.trim()) onAddCategory(name);
+    const cleanName = name?.trim();
+    if (!cleanName) return;
+    if (categories.some((category) => category.name.trim().toLocaleLowerCase() === cleanName.toLocaleLowerCase())) {
+      window.alert("A category with that name already exists.");
+      return;
+    }
+    onAddCategory(cleanName);
+    setFilter("all");
   };
 
   return (
@@ -682,6 +847,7 @@ function CategoriesView({
           <p className="text-sm font-semibold text-black/42">Inventory</p>
           <h2 className="mt-1 text-3xl font-semibold">Categories</h2>
           <p className="mt-2 max-w-xl text-sm leading-6 text-black/50">Organize belongings by stable home categories and buying decisions.</p>
+          <p className="mt-3 inline-flex rounded-full bg-paper px-3 py-1 text-xs font-semibold text-black/42">{items.length} total items</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button disabled={selectionMode} onClick={addCategory} className="inline-flex h-10 items-center justify-center gap-2 rounded-full border border-black/10 bg-white/55 px-4 text-sm font-semibold text-black/50 transition hover:border-accent/30 hover:text-accent disabled:cursor-not-allowed disabled:opacity-35">
@@ -746,26 +912,30 @@ function CategoriesView({
           const totalCount = items.filter((item) => item.categoryId === category.id).length;
           const categoryTopics = topics.filter((topic) => topic.categoryId === category.id).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
           const topicGroups = groupInventoryByTopic(categoryItems, categoryTopics);
+          const collapsed = collapsedCategoryIds.includes(category.id);
           if (!categoryItems.length && filter !== "all") return null;
           return (
-            <details key={category.id} open className="rounded-2xl border border-black/6 bg-paper/38 px-3 py-2.5">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+            <section key={category.id} className="group/category rounded-2xl border border-black/6 bg-paper/38 px-3 py-2.5">
+              <div onClick={() => toggleCategoryCollapsed(category.id)} className="flex cursor-pointer items-center justify-between gap-3">
                 <span className="flex min-w-0 items-center">
                   <CategoryTitleEditor category={category} disabled={selectionMode} onRename={onUpdateCategory} />
                   <span className="ml-2 text-xs font-medium text-black/38">{totalCount} items</span>
                 </span>
                 <span className="flex shrink-0 items-center gap-1">
-                  <button type="button" disabled={selectionMode} onClick={(event) => { event.preventDefault(); setBulkEditor({ categoryId: category.id, fixedCategory: true }); }} className="inline-flex h-8 items-center gap-1.5 rounded-full bg-white/60 px-2.5 text-xs font-semibold text-black/48 transition hover:text-accent disabled:cursor-not-allowed disabled:opacity-35">
+                  {!collapsed && <button type="button" disabled={selectionMode} onClick={(event) => { event.stopPropagation(); setBulkEditor({ categoryId: category.id, fixedCategory: true }); }} className="inline-flex h-8 items-center gap-1.5 rounded-full bg-white/60 px-2.5 text-xs font-semibold text-black/48 transition hover:text-accent disabled:cursor-not-allowed disabled:opacity-35">
                     <ListChecks className="h-3.5 w-3.5" />
                     Bulk
-                  </button>
-                  <button type="button" disabled={selectionMode} onClick={(event) => { event.preventDefault(); setEditor({ categoryId: category.id }); }} className="inline-flex h-8 items-center gap-1.5 rounded-full bg-white/60 px-2.5 text-xs font-semibold text-black/48 transition hover:text-accent disabled:cursor-not-allowed disabled:opacity-35">
+                  </button>}
+                  <button type="button" disabled={selectionMode} onClick={(event) => { event.stopPropagation(); setEditor({ categoryId: category.id }); }} className="inline-flex h-8 items-center gap-1.5 rounded-full bg-white/60 px-2.5 text-xs font-semibold text-black/48 transition hover:text-accent disabled:cursor-not-allowed disabled:opacity-35">
                     <Plus className="h-3.5 w-3.5" />
                     Add item
                   </button>
+                  <button type="button" disabled={selectionMode} onClick={(event) => { event.stopPropagation(); deleteCategory(category, totalCount); }} className="grid h-8 w-8 place-items-center rounded-full bg-white/45 text-black/24 opacity-100 transition hover:bg-red-50 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-25 sm:opacity-0 sm:group-hover/category:opacity-100" aria-label={`Delete category ${category.name}`} title="Delete category">
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
                 </span>
-              </summary>
-              <div className="mt-2 overflow-hidden rounded-xl bg-white/62">
+              </div>
+              {!collapsed && <div className="mt-2 overflow-hidden rounded-xl bg-white/62">
                 {topicGroups.map((group) => (
                   <div key={group.key} className="border-t border-black/[0.055] first:border-t-0">
                     <TopicHeader label={group.label} itemCount={group.items.length} />
@@ -777,8 +947,8 @@ function CategoriesView({
                   </div>
                 ))}
                 {!categoryItems.length && <p className="rounded-xl bg-white/65 p-3 text-sm text-black/42">No items in this category yet.</p>}
-              </div>
-            </details>
+              </div>}
+            </section>
           );
         })}
       </div>
@@ -951,8 +1121,9 @@ function TaskReorderGroup({
   const taskById = new globalThis.Map(group.tasks.map((task) => [task.id, task]));
 
   useEffect(() => {
-    setOrderedTaskIds(sourceTaskIds);
+    if (orderedTaskIdsRef.current.length === sourceTaskIds.length && orderedTaskIdsRef.current.every((id, index) => id === sourceTaskIds[index])) return;
     orderedTaskIdsRef.current = sourceTaskIds;
+    setOrderedTaskIds(sourceTaskIds);
   }, [sourceTaskIds]);
 
   const setTransientOrder = (ids: string[]) => {
@@ -1143,6 +1314,7 @@ function PackingView({ categories, topics, items, containers, onAssign, onDelete
   const packableItems = items.filter((item) => (item.transportStatus ?? "bring") === "bring");
   const containerCards = containers.map((container) => ({ ...container, description: getPackingDescription(container.name), items: packableItems.filter((item) => item.containerId === container.id), icon: getPackingIcon(container.name) }));
   const unassignedItems = [...packableItems.filter((item) => !item.containerId)].sort((a, b) => (a.packingOrder ?? 0) - (b.packingOrder ?? 0));
+  const packedItemCount = packableItems.length - unassignedItems.length;
   const filteredUnassigned = unassignedItems.filter((item) => {
     const needle = query.trim().toLowerCase();
     if (!needle) return true;
@@ -1183,12 +1355,13 @@ function PackingView({ categories, topics, items, containers, onAssign, onDelete
         <p className="text-sm font-semibold text-black/42">Inventory</p>
         <h2 className="mt-1 text-3xl font-semibold">Packing</h2>
         <p className="mt-2 max-w-xl text-sm leading-6 text-black/50">Move belongings into temporary travel containers. Categories remain the long-term organization after arrival.</p>
+        <p className="mt-3 inline-flex rounded-full bg-paper px-3 py-1 text-xs font-semibold text-black/42">{items.length} total items · {packedItemCount} packed · {unassignedItems.length} unassigned</p>
       </div>
 
       <div className="mb-7">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h3 className="text-lg font-semibold">Containers</h3>
-              <span className="rounded-full bg-paper px-3 py-1 text-xs font-semibold text-black/42">{packableItems.length - unassignedItems.length} packed</span>
+              <span className="rounded-full bg-paper px-3 py-1 text-xs font-semibold text-black/42">{packedItemCount} packed</span>
         </div>
         <div className="flex snap-x gap-3 overflow-x-auto pb-2 no-scrollbar xl:grid xl:grid-cols-5 xl:overflow-visible xl:pb-0">
           {containerCards.map((container) => (
@@ -1244,9 +1417,14 @@ function PackingView({ categories, topics, items, containers, onAssign, onDelete
           categoryName={categoryName}
           topicName={topicName}
           draggedItemId={draggedItemId}
-          reorderEnabled={!query.trim()}
+          reorderEnabled={false}
+          containers={containers}
           onReorder={onReorderUnassigned}
           onMove={setMoveItem}
+          onMoveCategory={(categoryItems, containerId, categoryLabel) => {
+            if (categoryItems.length >= 5 && !window.confirm(`Move ${categoryItems.length} ${categoryItems.length === 1 ? "item" : "items"} from "${categoryLabel}" to this container?`)) return;
+            categoryItems.forEach((item) => moveToContainer(item.id, containerId));
+          }}
           onDelete={(itemId) => deleteInventoryItemFromPacking(itemId)}
           onDragStart={(event, itemId) => {
             setDraggedItemId(itemId);
@@ -1424,8 +1602,10 @@ function PackingUnassignedQueue({
   topicName,
   draggedItemId,
   reorderEnabled,
+  containers,
   onReorder,
   onMove,
+  onMoveCategory,
   onDelete,
   onDragStart,
   onDragEnd,
@@ -1436,8 +1616,10 @@ function PackingUnassignedQueue({
   topicName: Map<string, string>;
   draggedItemId: string | null;
   reorderEnabled: boolean;
+  containers: PackingContainer[];
   onReorder: (orderedItemIds: string[]) => void;
   onMove: (item: InventoryItem) => void;
+  onMoveCategory: (items: InventoryItem[], containerId: string, categoryLabel: string) => void;
   onDelete: (itemId: string) => void;
   onDragStart: (event: React.DragEvent<HTMLElement>, itemId: string) => void;
   onDragEnd: () => void;
@@ -1445,11 +1627,32 @@ function PackingUnassignedQueue({
 }) {
   const sourceIds = useMemo(() => items.map((item) => item.id), [items]);
   const [orderedIds, setOrderedIds] = useState(sourceIds);
+  const [collapsedCategoryIds, setCollapsedCategoryIds] = useState<string[]>([]);
+  const [movingCategoryId, setMovingCategoryId] = useState<string | null>(null);
   const orderedIdsRef = useRef(sourceIds);
   const lastReorderTargetIdRef = useRef<string | null>(null);
-  const itemById = new globalThis.Map(items.map((item) => [item.id, item]));
+  const itemById = useMemo(() => new globalThis.Map(items.map((item) => [item.id, item])), [items]);
+  const orderedItems = useMemo(() => orderedIds.map((itemId) => itemById.get(itemId)).filter((item): item is InventoryItem => Boolean(item)), [orderedIds, itemById]);
+  const groupedItems = useMemo(() => {
+    const groups: Array<{ id: string; name: string; items: InventoryItem[] }> = [];
+    const groupByCategoryId = new globalThis.Map<string, { id: string; name: string; items: InventoryItem[] }>();
+
+    orderedItems.forEach((item) => {
+      const id = item.categoryId || "uncategorized";
+      let group = groupByCategoryId.get(id);
+      if (!group) {
+        group = { id, name: categoryName.get(item.categoryId) ?? "Uncategorized", items: [] };
+        groupByCategoryId.set(id, group);
+        groups.push(group);
+      }
+      group.items.push(item);
+    });
+
+    return groups;
+  }, [orderedItems, categoryName]);
 
   useEffect(() => {
+    if (orderedIdsRef.current.length === sourceIds.length && orderedIdsRef.current.every((id, index) => id === sourceIds[index])) return;
     setOrderedIds(sourceIds);
     orderedIdsRef.current = sourceIds;
     lastReorderTargetIdRef.current = null;
@@ -1459,38 +1662,27 @@ function PackingUnassignedQueue({
     lastReorderTargetIdRef.current = null;
   }, [draggedItemId]);
 
+  useEffect(() => {
+    const visibleGroupIds = new Set(groupedItems.map((group) => group.id));
+    setCollapsedCategoryIds((ids) => {
+      const nextIds = ids.filter((id) => visibleGroupIds.has(id));
+      return nextIds.length === ids.length ? ids : nextIds;
+    });
+    setMovingCategoryId((id) => (id && visibleGroupIds.has(id) ? id : null));
+  }, [groupedItems]);
+
   const setTransientOrder = (ids: string[]) => {
     orderedIdsRef.current = ids;
     setOrderedIds(ids);
   };
   const persistOrder = () => onReorder(orderedIdsRef.current);
-
-  if (!items.length) {
-    return <div className="rounded-xl border border-dashed border-black/10 bg-white/45 p-5 text-center text-sm text-black/42">{empty}</div>;
-  }
-
-  if (!reorderEnabled) {
-    return (
-      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-        {items.map((item) => (
-          <PackingItemCard
-            key={item.id}
-            item={item}
-            categoryName={categoryName.get(item.categoryId) ?? "Uncategorized"}
-            topicName={item.topicId ? topicName.get(item.topicId) : undefined}
-            dragging={draggedItemId === item.id}
-            onMove={() => onMove(item)}
-            onDelete={() => onDelete(item.id)}
-            onDragStart={(event) => onDragStart(event, item.id)}
-            onDragEnd={onDragEnd}
-          />
-        ))}
-      </div>
-    );
-  }
-
-  const reorderForTarget = (targetId: string) => {
+  const toggleCategoryCollapsed = (categoryId: string) => {
+    setCollapsedCategoryIds((ids) => (ids.includes(categoryId) ? ids.filter((id) => id !== categoryId) : [...ids, categoryId]));
+  };
+  const reorderForTarget = (targetId: string, targetCategoryId?: string) => {
     if (!draggedItemId || draggedItemId === targetId) return;
+    const draggedItem = itemById.get(draggedItemId);
+    if (targetCategoryId && draggedItem?.categoryId !== targetCategoryId) return;
     if (lastReorderTargetIdRef.current === targetId) return;
     const currentIds = orderedIdsRef.current;
     const fromIndex = currentIds.indexOf(draggedItemId);
@@ -1502,19 +1694,123 @@ function PackingUnassignedQueue({
     lastReorderTargetIdRef.current = targetId;
     setTransientOrder(nextIds);
   };
-
   const finishDrag = () => {
     lastReorderTargetIdRef.current = null;
     persistOrder();
     onDragEnd();
   };
 
+  if (!items.length) {
+    return <div className="rounded-xl border border-dashed border-black/10 bg-white/45 p-5 text-center text-sm text-black/42">{empty}</div>;
+  }
+
+  if (!reorderEnabled) {
+    return (
+      <div className="space-y-3">
+        {groupedItems.map((group) => {
+          const collapsed = collapsedCategoryIds.includes(group.id);
+          return (
+            <section key={group.id} className="rounded-2xl border border-black/7 bg-white/35 p-2.5">
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => toggleCategoryCollapsed(group.id)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  toggleCategoryCollapsed(group.id);
+                }}
+                className={`flex w-full cursor-pointer items-center justify-between gap-3 px-1 text-left ${collapsed ? "" : "mb-2"}`}
+                aria-expanded={!collapsed}
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <ChevronDown className={`h-4 w-4 shrink-0 text-black/28 transition ${collapsed ? "-rotate-90" : ""}`} />
+                  <h4 className="truncate text-sm font-semibold text-ink">{group.name}</h4>
+                </span>
+                <span className="flex shrink-0 items-center gap-1.5">
+                  {movingCategoryId === group.id ? (
+                    <select
+                      value=""
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={(event) => {
+                        event.stopPropagation();
+                        if (!event.target.value) return;
+                        onMoveCategory(group.items, event.target.value, group.name);
+                        setMovingCategoryId(null);
+                      }}
+                      className="h-8 max-w-40 rounded-full border border-black/8 bg-white px-2 text-xs font-semibold text-black/50 outline-none transition focus:border-accent"
+                      aria-label={`Move ${group.name} category to container`}
+                      autoFocus
+                    >
+                      <option value="">Move to...</option>
+                      {containers.map((container) => (
+                        <option key={container.id} value={container.id}>{container.name}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setMovingCategoryId(group.id);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key !== "Enter" && event.key !== " ") return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setMovingCategoryId(group.id);
+                      }}
+                      className="inline-flex h-8 items-center rounded-full bg-white/55 px-2.5 text-xs font-semibold text-black/38 transition hover:text-accent"
+                    >
+                      Move category
+                    </span>
+                  )}
+                  <span className="rounded-full bg-white/70 px-2.5 py-1 text-xs font-semibold text-black/42">{group.items.length} {group.items.length === 1 ? "item" : "items"}</span>
+                </span>
+              </div>
+              {!collapsed && (
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                  {group.items.map((item) => (
+                    <motion.div
+                      key={item.id}
+                      layout={draggedItemId ? "position" : false}
+                      initial={false}
+                      transition={{ layout: { type: "spring", stiffness: 160, damping: 44, mass: 1.15 } }}
+                      className="min-w-0"
+                      onDragOver={(event) => {
+                        event.preventDefault();
+                        reorderForTarget(item.id, group.id);
+                      }}
+                      onDrop={persistOrder}
+                    >
+                      <PackingItemCard
+                        item={item}
+                        categoryName={group.name}
+                        topicName={item.topicId ? topicName.get(item.topicId) : undefined}
+                        dragging={draggedItemId === item.id}
+                        onMove={() => onMove(item)}
+                        onDelete={() => onDelete(item.id)}
+                        onDragStart={(event) => onDragStart(event, item.id)}
+                        onDragEnd={finishDrag}
+                      />
+                    </motion.div>
+                  ))}
+                </div>
+              )}
+            </section>
+          );
+        })}
+      </div>
+    );
+  }
+
   return (
     <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
       {orderedIds.map((itemId) => itemById.get(itemId)).filter((item): item is InventoryItem => Boolean(item)).map((item) => (
         <motion.div
           key={item.id}
-          layout="position"
+          layout={draggedItemId ? "position" : false}
           initial={false}
           transition={{ layout: { type: "spring", stiffness: 160, damping: 44, mass: 1.15 } }}
           className="min-w-0"
@@ -1550,19 +1846,13 @@ function getPackingMarkerColor(value: string) {
 
 function PackingItemCard({ item, categoryName, topicName, dragging, onMove, onDelete, onDragStart, onDragEnd }: { item: InventoryItem; categoryName: string; topicName?: string; dragging: boolean; onMove: () => void; onDelete: () => void; onDragStart: (event: React.DragEvent<HTMLElement>) => void; onDragEnd: () => void }) {
   const markerLabel = topicName ? `${categoryName} / ${topicName}` : categoryName;
-  const markerColor = getPackingMarkerColor(`${item.categoryId}:${item.topicId ?? ""}`);
 
   return (
     <div
       className={`group min-h-[4.35rem] rounded-xl border border-black/7 bg-white/78 px-3 py-2.5 shadow-[0_5px_14px_rgba(23,23,23,0.025)] transition duration-200 ${dragging ? "scale-[1.006] shadow-[0_10px_22px_rgba(23,23,23,0.055)]" : "hover:border-accent/18 hover:bg-white"}`}
     >
       <div className="flex items-start justify-between gap-2">
-        <div className="flex min-w-0 items-start gap-2 pr-1">
-          <span className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-white/85" style={{ backgroundColor: markerColor }} title={markerLabel} aria-label={`Category: ${markerLabel}`} />
-          <span className="sr-only">Category: {markerLabel}</span>
-          <p className="min-w-0 truncate text-sm font-semibold leading-6 text-ink">{item.name}</p>
-        </div>
-        <div className="flex shrink-0 items-center gap-1 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100">
+        <div className="flex min-w-0 flex-1 items-start gap-2 pr-1">
           <button
             type="button"
             draggable
@@ -1574,17 +1864,21 @@ function PackingItemCard({ item, categoryName, topicName, dragging, onMove, onDe
               event.stopPropagation();
               onDragEnd();
             }}
-            className="grid h-7 w-6 cursor-grab place-items-center rounded-full bg-paper/80 text-black/28 transition hover:text-accent active:cursor-grabbing"
-            aria-label={`Move ${item.name}`}
-            title="Drag to reorder or move to a container"
+            className={`mt-0.5 grid h-6 w-5 shrink-0 place-items-center rounded-full text-black/28 transition hover:bg-paper/70 hover:text-accent ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
+            aria-label={`Drag to reorder ${item.name}`}
+            title="Drag to reorder"
           >
             <GripVertical className="h-4 w-4" />
           </button>
-          <button type="button" onClick={(event) => { event.stopPropagation(); onMove(); }} className="rounded-full bg-paper/80 px-2 py-1 text-xs font-semibold text-black/38 transition hover:text-accent">
-            Move
+          <p className="min-w-0 truncate text-sm font-semibold leading-6 text-ink">{item.name}</p>
+          <span className="sr-only">Category: {markerLabel}</span>
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100">
+          <button type="button" onClick={(event) => { event.stopPropagation(); onMove(); }} className="grid h-7 w-7 place-items-center rounded-full bg-paper/70 text-black/32 transition hover:text-accent" aria-label={`Move ${item.name} to another container`} title="Move">
+            <ArrowUp className="h-3.5 w-3.5" />
           </button>
-          <button type="button" onClick={(event) => { event.stopPropagation(); onDelete(); }} className="rounded-full bg-paper/80 px-2 py-1 text-xs font-semibold text-black/38 transition hover:bg-red-50 hover:text-red-500">
-            Delete
+          <button type="button" onClick={(event) => { event.stopPropagation(); onDelete(); }} className="grid h-7 w-7 place-items-center rounded-full bg-paper/70 text-black/32 transition hover:bg-red-50 hover:text-red-500" aria-label={`Delete ${item.name}`} title="Delete">
+            <Trash2 className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
@@ -1621,25 +1915,38 @@ function PackingDetailRow({
   const markerColor = getPackingMarkerColor(`${item.categoryId}:${item.topicId ?? ""}`);
 
   return (
-    <div draggable onDragStart={onDragStart} onDragEnd={onDragEnd} className="flex items-center gap-2 rounded-xl bg-white/75 px-3 py-2">
+    <div draggable onDragStart={onDragStart} onDragEnd={onDragEnd} className="group/detail-row flex items-center gap-2 rounded-xl bg-white/75 px-3 py-2 transition hover:bg-white">
+      <span className="grid h-7 w-5 shrink-0 cursor-grab place-items-center text-black/20 opacity-55 transition hover:text-accent group-hover/detail-row:opacity-100 active:cursor-grabbing" aria-label={`Drag ${item.name}`} title="Drag to reorder or move">
+        <GripVertical className="h-4 w-4" />
+      </span>
       <span className="flex min-w-0 flex-1 items-center gap-2">
         <span className="h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-white/85" style={{ backgroundColor: markerColor }} title={markerLabel} aria-label={`Category: ${markerLabel}`} />
         <span className="sr-only">Category: {markerLabel}</span>
-        <span className="min-w-0 truncate text-sm font-semibold">{item.name}</span>
-        {item.quantity !== "1" && <InventoryBadge>Qty {item.quantity}</InventoryBadge>}
+        <span className="min-w-0">
+          <span className="block truncate text-sm font-semibold">{item.name}</span>
+          <span className="mt-0.5 block truncate text-xs font-medium text-black/38">{markerLabel}</span>
+        </span>
+        {item.quantity !== "1" && <span className="hidden sm:inline-flex"><InventoryBadge>Qty {item.quantity}</InventoryBadge></span>}
       </span>
-      <button type="button" onClick={() => onMove(item.id, UNASSIGNED_CONTAINER_ID)} className="shrink-0 rounded-full border border-black/8 bg-paper px-2.5 py-1 text-xs font-semibold text-black/45 transition hover:border-accent/25 hover:text-accent">
-        Remove from container
-      </button>
-      <button type="button" onClick={onDelete} className="shrink-0 rounded-full border border-red-200 bg-white/70 px-2.5 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-50">
-        Delete item
-      </button>
-      <select value={item.containerId ?? ""} onChange={(event) => onMove(item.id, event.target.value || UNASSIGNED_CONTAINER_ID)} className="hidden h-8 max-w-36 shrink-0 rounded-full border border-black/8 bg-paper px-2 text-xs font-semibold text-black/50 outline-none transition focus:border-accent sm:block">
+      <select value={item.containerId ?? ""} onChange={(event) => onMove(item.id, event.target.value || UNASSIGNED_CONTAINER_ID)} className="h-8 max-w-40 shrink-0 rounded-full border border-black/8 bg-paper px-2 text-xs font-semibold text-black/50 outline-none transition focus:border-accent">
         <option value="">Unassigned</option>
         {containers.map((container) => (
           <option key={container.id} value={container.id}>{container.name}</option>
         ))}
       </select>
+      <span className="group/actions relative shrink-0">
+        <button type="button" className="grid h-8 w-8 place-items-center rounded-full bg-paper/70 text-black/32 opacity-100 transition hover:text-accent sm:opacity-0 sm:group-hover/detail-row:opacity-100" aria-label={`More actions for ${item.name}`}>
+          <MoreVertical className="h-4 w-4" />
+        </button>
+        <span className="pointer-events-none absolute right-0 top-8 z-10 hidden min-w-44 rounded-xl border border-black/10 bg-white p-1.5 shadow-[0_12px_28px_rgba(23,23,23,0.1)] group-hover/actions:pointer-events-auto group-hover/actions:block group-focus-within/actions:pointer-events-auto group-focus-within/actions:block">
+          <button type="button" onClick={() => onMove(item.id, UNASSIGNED_CONTAINER_ID)} className="block w-full rounded-lg px-3 py-2 text-left text-xs font-semibold text-black/52 transition hover:bg-paper hover:text-accent">
+            Remove from container
+          </button>
+          <button type="button" onClick={onDelete} className="block w-full rounded-lg px-3 py-2 text-left text-xs font-semibold text-red-600 transition hover:bg-red-50">
+            Delete item
+          </button>
+        </span>
+      </span>
     </div>
   );
 }
@@ -1900,6 +2207,8 @@ function TaskRow({
   const rowDragProps = dragEnabled
     ? {
         value: task.id,
+        initial: false,
+        transition: { duration: 0, layout: { duration: 0 } },
         whileDrag: { scale: 1.006, boxShadow: "0 16px 34px rgba(23,23,23,0.095)" },
         onDragStart: () => setDragging(true),
         onDragEnd: () => {
@@ -1940,29 +2249,31 @@ function TaskRow({
           {completed ? <Check className="h-4 w-4" /> : null}
       </button>
 
-      <button
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          if (selectionMode) onSelect();
-          else onEditText();
-        }}
-        className={`group -m-1.5 flex min-w-0 flex-1 cursor-pointer items-center rounded-xl p-1.5 text-left transition focus:outline-none focus:ring-4 focus:ring-accent/10 ${selectionMode ? "hover:bg-accent/5" : "hover:bg-black/[0.025]"}`}
-        aria-label={selectionMode ? (selected ? `Unselect ${task.title}` : `Select ${task.title}`) : `Edit ${task.title}`}
-      >
-        <span className="min-w-0 flex-1">
-          <span className="flex min-w-0 items-center gap-2">
-            <span className={`min-w-0 truncate text-[15px] font-semibold ${completed ? "text-black/45 line-through decoration-accent/60" : "text-ink"}`}>{task.title}</span>
-            {task.status === "in_progress" && !completed && <Badge>In progress</Badge>}
-            {blocked && !completed && dependencyNames.length > 0 && <Badge>Waiting</Badge>}
-            {overdue && <Badge tone="warn">Overdue</Badge>}
+      <div className="min-w-0 flex-1">
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            if (selectionMode) onSelect();
+            else onEditText();
+          }}
+          className={`group -m-1.5 flex min-w-0 w-full max-w-full cursor-pointer items-center rounded-xl p-1.5 text-left transition focus:outline-none focus:ring-4 focus:ring-accent/10 sm:max-w-[67%] ${selectionMode ? "hover:bg-accent/5" : "hover:bg-black/[0.025]"}`}
+          aria-label={selectionMode ? (selected ? `Unselect ${task.title}` : `Select ${task.title}`) : `Edit ${task.title}`}
+        >
+          <span className="min-w-0 flex-1">
+            <span className="flex min-w-0 items-center gap-2">
+              <span className={`min-w-0 truncate text-[15px] font-semibold ${completed ? "text-black/45 line-through decoration-accent/60" : "text-ink"}`}>{task.title}</span>
+              {task.status === "in_progress" && !completed && <Badge>In progress</Badge>}
+              {blocked && !completed && dependencyNames.length > 0 && <Badge>Waiting</Badge>}
+              {overdue && <Badge tone="warn">Overdue</Badge>}
+            </span>
+            <span className="mt-0.5 flex min-w-0 items-center gap-2 overflow-hidden text-xs leading-5 text-black/42">
+              {blocked && dependencyNames.length > 0 && <span className="hidden min-w-0 truncate sm:inline">Waiting for: {dependencyNames.join(", ")}</span>}
+              {task.note && <span className="min-w-0 truncate">{task.note}</span>}
+            </span>
           </span>
-          <span className="mt-0.5 flex min-w-0 items-center gap-2 overflow-hidden text-xs leading-5 text-black/42">
-            {blocked && dependencyNames.length > 0 && <span className="hidden min-w-0 truncate sm:inline">Waiting for: {dependencyNames.join(", ")}</span>}
-            {task.note && <span className="min-w-0 truncate">{task.note}</span>}
-          </span>
-        </span>
-      </button>
+        </button>
+      </div>
 
       {!selectionMode && <DateEditZone
         deadline={task.deadline}

@@ -9,6 +9,8 @@ export type RelocationTask = {
   deadline: string;
   status: TaskStatus;
   dependsOn?: string[];
+  completedAt?: string;
+  cost?: number;
   createdAt?: string;
   order?: number;
 };

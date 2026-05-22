@@ -44,6 +44,7 @@ type RelocationState = {
   completeTask: (phaseId: string, taskId: string) => void;
   addInventoryCategory: (name: string) => void;
   updateInventoryCategory: (categoryId: string, name: string) => void;
+  deleteInventoryCategory: (categoryId: string) => void;
   addInventoryItem: (item: InventoryItemDraft) => void;
   updateInventoryItem: (itemId: string, patch: Partial<InventoryItem>) => void;
   deleteInventoryItem: (itemId: string) => void;
@@ -87,6 +88,8 @@ const sanitizeTask = (task: TaskDraft): RelocationTask => ({
   deadline: task.deadline,
   status: task.status ?? "available",
   dependsOn: task.dependsOn?.filter(Boolean),
+  completedAt: task.completedAt,
+  cost: task.cost,
   createdAt: task.createdAt ?? new Date().toISOString(),
   order: task.order ?? 0,
 });
@@ -113,6 +116,13 @@ const sanitizeInventoryItem = (item: InventoryItemDraft): InventoryItem => ({
 const getNextPackingOrder = (items: InventoryItem[]) => Math.max(-1, ...items.filter((item) => !item.containerId).map((item) => item.packingOrder ?? 0)) + 1;
 
 const getNextTopicOrder = (topics: InventoryTopic[], categoryId: string) => Math.max(-1, ...topics.filter((topic) => topic.categoryId === categoryId).map((topic) => topic.order ?? 0)) + 1;
+
+const normalizeCategoryName = (name: string) => name.trim().toLocaleLowerCase();
+
+const hasInventoryCategoryName = (categories: InventoryCategory[], name: string, exceptCategoryId?: string) => {
+  const normalizedName = normalizeCategoryName(name);
+  return categories.some((category) => category.id !== exceptCategoryId && normalizeCategoryName(category.name) === normalizedName);
+};
 
 const persistData = (phases: Phase[], inventoryCategories: InventoryCategory[], inventoryItems: InventoryItem[], packingContainers: PackingContainer[], inventoryTopics: InventoryTopic[]) => {
   const data = flattenData(phases, inventoryCategories, inventoryItems, packingContainers, inventoryTopics);
@@ -340,6 +350,7 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
     set((state) => {
       const cleanName = name.trim();
       if (!cleanName) return state;
+      if (hasInventoryCategoryName(state.inventoryCategories, cleanName)) return { persistenceError: "A category with that name already exists." };
       const inventoryCategories = [...state.inventoryCategories, { id: makeId("category"), name: cleanName }];
       try {
         return { inventoryCategories, lastSavedAt: persistData(state.phases, inventoryCategories, state.inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
@@ -351,11 +362,23 @@ export const useRelocationStore = create<RelocationState>()((set, get) => ({
     set((state) => {
       const cleanName = name.trim();
       if (!cleanName) return state;
+      if (hasInventoryCategoryName(state.inventoryCategories, cleanName, categoryId)) return { persistenceError: "A category with that name already exists." };
       const inventoryCategories = state.inventoryCategories.map((category) => (category.id === categoryId ? { ...category, name: cleanName } : category));
       try {
         return { inventoryCategories, lastSavedAt: persistData(state.phases, inventoryCategories, state.inventoryItems, state.packingContainers, state.inventoryTopics), persistenceError: undefined };
       } catch (error) {
         return { inventoryCategories, persistenceError: error instanceof Error ? error.message : "Could not rename category." };
+      }
+    }),
+  deleteInventoryCategory: (categoryId) =>
+    set((state) => {
+      const inventoryCategories = state.inventoryCategories.filter((category) => category.id !== categoryId);
+      const inventoryTopics = state.inventoryTopics.filter((topic) => topic.categoryId !== categoryId);
+      const inventoryItems = state.inventoryItems.filter((item) => item.categoryId !== categoryId);
+      try {
+        return { inventoryCategories, inventoryTopics, inventoryItems, lastSavedAt: persistData(state.phases, inventoryCategories, inventoryItems, state.packingContainers, inventoryTopics), persistenceError: undefined };
+      } catch (error) {
+        return { inventoryCategories, inventoryTopics, inventoryItems, persistenceError: error instanceof Error ? error.message : "Could not delete category." };
       }
     }),
   addInventoryItem: (item) =>
